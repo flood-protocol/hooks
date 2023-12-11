@@ -4,3 +4,6 @@
 [submodule "lib/solady"]
 	path = lib/solady
 	url = https://github.com/vectorized/solady
+[submodule "lib/flood-contracts"]
+	path = lib/flood-contracts
+	url = https://github.com/flood-protocol/flood-contracts

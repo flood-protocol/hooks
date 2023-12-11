@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
-import {console2 as console} from "forge-std/Test.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 
@@ -35,8 +34,6 @@ contract UnwrapHook {
         assembly {
             recipient := shr(96, calldataload(0))
         }
-
-        console.log("Recipient: %s", recipient);
 
         uint256 amount = ERC20(address(wrapped)).balanceOf(address(this));
 
