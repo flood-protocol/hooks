@@ -1,10 +1,14 @@
 [profile.default]
-    evm_version ="paris"
-    libs        =["lib"]
-    out         ="out"
-    remappings  =["forge-std/=lib/forge-std/src/", "solady/=lib/solady/src"]
+    evm_version="paris"
+    libs=["lib"]
+    out="out"
+    remappings=[
+        "flood-contracts/=lib/flood-contracts/src",
+        "forge-std/=lib/forge-std/src/",
+        "solady/=lib/solady/src",
+    ]
     solc_version="0.8.23"
-    src         ="src"
+    src="src"
 
 
 [profile.deploy]
