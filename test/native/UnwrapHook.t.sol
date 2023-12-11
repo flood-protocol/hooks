@@ -2,28 +2,25 @@
 pragma solidity ^0.8.23;
 
 import {Test} from "forge-std/Test.sol";
-import {IWrapped, UnwrapHook} from "src/native/UnwrapHook.sol";
-import {ERC20} from "solady/tokens/ERC20.sol";
-
-contract MockWeth is Test {
-    function withdraw(uint256 amount) external {
-        vm.deal(msg.sender, amount);
-    }
-
-    function balanceOf(address) external pure returns (uint256) {
-        return 100 ether;
-    }
-}
+import {UnwrapHook} from "src/native/UnwrapHook.sol";
+import {WETH} from "solady/tokens/WETH.sol";
 
 contract UnwrapHookTest is Test {
-    address floodPlain = address(1);
-    MockWeth weth = new MockWeth();
-    UnwrapHook hook = new UnwrapHook(address(weth), floodPlain);
+    WETH weth;
+    UnwrapHook hook;
+
+    function setUp() public {
+        weth = new WETH();
+        hook = new UnwrapHook(weth, address(this));
+    }
 
     function testUnwrap(address recipient) public {
-        vm.prank(floodPlain);
+        bound(uint256(uint160(recipient)), 100, type(uint160).max);
+
+        deal(address(weth), address(hook), 100 ether);
+        uint256 balancePre = recipient.balance;
         (bool s,) = address(hook).call(abi.encodePacked(recipient));
         assertTrue(s);
-        assertEq(recipient.balance, 100 ether);
+        assertEq(recipient.balance, balancePre + 100 ether);
     }
 }

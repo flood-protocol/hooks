@@ -4,13 +4,10 @@ pragma solidity ^0.8.23;
 import {IFloodPlain} from "flood-contracts/interfaces/IFloodPlain.sol";
 import {WETH} from "solady/tokens/WETH.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
+import {IERC1271} from "src/IERC1271.sol";
 
 error NativeTrader__WrongValue();
 error NativeTrader__WrongTokens();
-
-interface IERC1271 {
-    function isValidSignature(bytes32 hash, bytes calldata signature) external view returns (bytes4 magicValue);
-}
 
 /// @title Native Trader
 /// @notice This contracts receives ETH and then trades it on Flood for a token of the sender's choice.
@@ -24,6 +21,7 @@ contract NativeTrader is IERC1271 {
     constructor(WETH _weth, IFloodPlain _floodPlain) {
         weth = _weth;
         floodPlain = _floodPlain;
+        weth.approve(address(floodPlain.PERMIT2()), type(uint256).max);
     }
 
     /// @notice Max approves a token to Permit2.

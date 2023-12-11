@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
-import {ERC20} from "solady/tokens/ERC20.sol";
+import {WETH} from "solady/tokens/WETH.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 
 error UnwrapHook__BadCaller();
-
-interface IWrapped {
-    function withdraw(uint256 amount) external;
-}
 
 /// @title Unwrap Hook
 /// @notice This contract unwraps tokens sent to it by the Flood Plain contract.
@@ -17,12 +13,10 @@ contract UnwrapHook {
     using SafeTransferLib for address;
 
     address immutable floodPlain;
-    IWrapped immutable wrapped;
+    WETH immutable wrapped;
 
-    bytes1 constant FALLBACK_SELECTOR = bytes1(0x00);
-
-    constructor(address _weth, address _floodPlain) {
-        wrapped = IWrapped(_weth);
+    constructor(WETH _weth, address _floodPlain) {
+        wrapped = _weth;
         floodPlain = _floodPlain;
     }
 
@@ -35,9 +29,11 @@ contract UnwrapHook {
             recipient := shr(96, calldataload(0))
         }
 
-        uint256 amount = ERC20(address(wrapped)).balanceOf(address(this));
+        uint256 amount = wrapped.balanceOf(address(this));
 
         wrapped.withdraw(amount);
         recipient.safeTransferETH(amount);
     }
+
+    receive() external payable {}
 }
