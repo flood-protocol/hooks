@@ -2,21 +2,31 @@
 pragma solidity ^0.8.23;
 
 import {IFloodPlain} from "flood-contracts/interfaces/IFloodPlain.sol";
+import {OrderHash} from "flood-contracts/libraries/OrderHash.sol";
 import {WETH} from "solady/tokens/WETH.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
+import {ECDSA} from "solady/utils/ECDSA.sol";
+import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {IERC1271} from "src/IERC1271.sol";
 
 error NativeTrader__WrongValue();
 error NativeTrader__WrongTokens();
+error NativeTrader__WrongSignature();
+error NativeTrader__WrongReplacement();
 
 /// @title Native Trader
 /// @notice This contracts receives ETH and then trades it on Flood for a token of the sender's choice.
 contract NativeTrader is IERC1271 {
+    using OrderHash for IFloodPlain.Order;
+    using ECDSA for bytes32;
+    using SafeTransferLib for address;
+    using SafeTransferLib for address payable;
+
     WETH immutable weth;
     IFloodPlain immutable floodPlain;
 
     /// A mapping from permit hashes to the order signer.
-    mapping(bytes32 permitHash => bool present) public orders;
+    mapping(bytes32 permitHash => address user) public orders;
 
     constructor(WETH _weth, IFloodPlain _floodPlain) {
         weth = _weth;
@@ -39,14 +49,74 @@ contract NativeTrader is IERC1271 {
         override
         returns (bytes4 magicValue)
     {
-        if (orders[hash]) {
+        if (orders[hash] != address(0)) {
             return this.isValidSignature.selector;
+        }
+    }
+
+    /// @notice Replaces an order with a different one but with the same offer.
+    /// @dev We have users sign the order hash instead of the full permit hash to cancel an order. This is done so that cancellations require 1 additional signature.
+    /// @param oldOrder The order to replace and the signature of the order hash.
+    /// @param newOrder The order to replace with and the signature of the permit hash.
+    function replaceOrder(IFloodPlain.SignedOrder calldata oldOrder, IFloodPlain.SignedOrder calldata newOrder)
+        external
+    {
+        bytes32 permitHash = oldOrder.order.hashAsWitness(address(floodPlain));
+        address user = orders[permitHash];
+        // Check wether the user signed the order hash, indicating that they want to replace the order.
+        if (user == address(0) || user != oldOrder.order.hash().recoverCalldata(oldOrder.signature)) {
+            revert NativeTrader__WrongSignature();
+        }
+
+        // Check wether the old user offer is the same as the new user offer.
+        if (oldOrder.order.offer.length != newOrder.order.offer.length) {
+            revert NativeTrader__WrongReplacement();
+        }
+        uint256 length = oldOrder.order.offer.length;
+        for (uint256 i = 0; i < length; ++i) {
+            if (oldOrder.order.offer[i].token != newOrder.order.offer[i].token) {
+                revert NativeTrader__WrongReplacement();
+            }
+            if (oldOrder.order.offer[i].amount != newOrder.order.offer[i].amount) {
+                revert NativeTrader__WrongReplacement();
+            }
+        }
+
+        bytes32 newPermitHash = newOrder.order.hashAsWitness(address(floodPlain));
+        // Check wether the new user signed the permit hash, indicating that they want to replace the order.
+        if (newPermitHash.recoverCalldata(newOrder.signature) != user) {
+            revert NativeTrader__WrongSignature();
+        }
+
+        // Delete the old order and add the new one.
+        delete orders[permitHash];
+        orders[newPermitHash] = user;
+    }
+
+    /// @notice Cancels an order, making it unfillable and returning tokens and ETH to the user.
+    /// @dev We have users sign the order hash instead of the full permit hash to cancel an order. This is done so that cancellations require 1 additional signature.
+    /// @param order The order to cancel and the signature of the order hash.
+    function cancelOrder(IFloodPlain.SignedOrder calldata order) external {
+        bytes32 permitHash = order.order.hashAsWitness(address(floodPlain));
+        address user = orders[permitHash];
+        // Check wether the user signed the order hash, indicating that they want to cancel the order.
+        if (user == address(0) || user != order.order.hash().recoverCalldata(order.signature)) {
+            revert NativeTrader__WrongSignature();
+        }
+        delete orders[permitHash];
+        // Transfer the tokens back to the user.
+        uint256 length = order.order.offer.length;
+        // Unwrap the WETH and transfer it back to the user.
+        weth.withdraw(order.order.offer[0].amount);
+        payable(user).safeTransferETH(order.order.offer[0].amount);
+        for (uint256 i = 1; i < length; ++i) {
+            order.order.offer[i].token.safeTransfer(user, order.order.offer[i].amount);
         }
     }
 
     /// @notice Allows ETH as part of an order on Flood.
     /// @dev We require WETH to be the first token in the offer.
-    function trade(IFloodPlain.Order calldata order) external payable {
+    function submitOrder(IFloodPlain.Order calldata order) external payable {
         if (order.offer[0].token != address(weth)) {
             revert NativeTrader__WrongTokens();
         }
@@ -54,12 +124,12 @@ contract NativeTrader is IERC1271 {
             revert NativeTrader__WrongValue();
         }
 
-        orders[floodPlain.getPermitHash(order)] = true;
+        orders[order.hashAsWitness(address(floodPlain))] = msg.sender;
         weth.deposit{value: order.offer[0].amount}();
         uint256 length = order.offer.length;
         // Deposit the rest of the tokens.
         for (uint256 i = 1; i < length; ++i) {
-            ERC20(order.offer[i].token).transferFrom(msg.sender, address(this), order.offer[i].amount);
+            order.offer[i].token.safeTransferFrom(msg.sender, address(this), order.offer[i].amount);
         }
     }
 }
