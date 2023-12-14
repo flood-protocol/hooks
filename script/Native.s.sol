@@ -10,21 +10,19 @@ contract NativeScript is BetterScript {
     function deployUnwrapHook(WETH weth, address floodPlain) public {
         bytes32 salt = bytes32(0xe312ba886ebb062d6230c385687badf67809de670f2cc521818f00000000b71e);
 
-        console.logBytes32(initCodeHash(type(UnwrapHook).creationCode, abi.encode(weth, floodPlain)));
         uint256 key = vm.envUint("ALT_ADMIN_KEY");
         vm.broadcast(key);
         console.log(
-            "Deployed UnwrapHook at", deploy2(type(UnwrapHook).creationCode, salt, abi.encode(weth, floodPlain))
+            "Deployed UnwrapHook at", deploy3(type(UnwrapHook).creationCode, salt, abi.encode(weth, floodPlain))
         );
     }
 
     function deployNativeTrader(WETH weth, IFloodPlain floodPlain) public {
         bytes32 salt = bytes32(0xe312ba886ebb062d6230c385687badf67809de67261e13702f62000000025ed8);
-        console.logBytes32(initCodeHash(type(NativeTrader).creationCode, abi.encode(weth, floodPlain)));
         uint256 key = vm.envUint("ALT_ADMIN_KEY");
         vm.broadcast(key);
         console.log(
-            "Deployed Native Trader at", deploy2(type(NativeTrader).creationCode, salt, abi.encode(weth, floodPlain))
+            "Deployed Native Trader at", deploy3(type(NativeTrader).creationCode, salt, abi.encode(weth, floodPlain))
         );
     }
 }
