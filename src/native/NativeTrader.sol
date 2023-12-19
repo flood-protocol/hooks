@@ -8,7 +8,9 @@ import {ERC20} from "solady/tokens/ERC20.sol";
 import {ECDSA} from "solady/utils/ECDSA.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {IERC1271} from "src/IERC1271.sol";
+import {IEIP712} from "permit2/src/interfaces/IEIP712.sol";
 
+error NativeTrader__WrongOfferer();
 error NativeTrader__WrongValue();
 error NativeTrader__WrongTokens();
 error NativeTrader__WrongSignature();
@@ -24,6 +26,7 @@ contract NativeTrader is IERC1271 {
 
     WETH immutable weth;
     IFloodPlain immutable floodPlain;
+    bytes32 immutable domainSeparator;
 
     /// A mapping from permit hashes to the order signer.
     mapping(bytes32 permitHash => address user) public orders;
@@ -31,7 +34,9 @@ contract NativeTrader is IERC1271 {
     constructor(WETH _weth, IFloodPlain _floodPlain) {
         weth = _weth;
         floodPlain = _floodPlain;
-        weth.approve(address(floodPlain.PERMIT2()), type(uint256).max);
+        address permit2 = address(floodPlain.PERMIT2());
+        domainSeparator = IEIP712(permit2).DOMAIN_SEPARATOR();
+        weth.approve(permit2, type(uint256).max);
     }
 
     /// @notice Max approves a token to Permit2.
@@ -61,10 +66,11 @@ contract NativeTrader is IERC1271 {
     function replaceOrder(IFloodPlain.SignedOrder calldata oldOrder, IFloodPlain.SignedOrder calldata newOrder)
         external
     {
-        bytes32 permitHash = oldOrder.order.hashAsWitness(address(floodPlain));
+        bytes32 permitHash = newOrderHash(oldOrder.order);
         address user = orders[permitHash];
+
         // Check wether the user signed the order hash, indicating that they want to replace the order.
-        if (user == address(0) || user != oldOrder.order.hash().recoverCalldata(oldOrder.signature)) {
+        if (user == address(0) || user != cancelOrderHash(oldOrder.order).recoverCalldata(oldOrder.signature)) {
             revert NativeTrader__WrongSignature();
         }
 
@@ -82,7 +88,7 @@ contract NativeTrader is IERC1271 {
             }
         }
 
-        bytes32 newPermitHash = newOrder.order.hashAsWitness(address(floodPlain));
+        bytes32 newPermitHash = newOrderHash(newOrder.order);
         // Check wether the new user signed the permit hash, indicating that they want to replace the order.
         if (newPermitHash.recoverCalldata(newOrder.signature) != user) {
             revert NativeTrader__WrongSignature();
@@ -97,10 +103,11 @@ contract NativeTrader is IERC1271 {
     /// @dev We have users sign the order hash instead of the full permit hash to cancel an order. This is done so that cancellations require 1 additional signature.
     /// @param order The order to cancel and the signature of the order hash.
     function cancelOrder(IFloodPlain.SignedOrder calldata order) external {
-        bytes32 permitHash = order.order.hashAsWitness(address(floodPlain));
+        bytes32 permitHash = newOrderHash(order.order);
         address user = orders[permitHash];
+
         // Check wether the user signed the order hash, indicating that they want to cancel the order.
-        if (user == address(0) || user != order.order.hash().recoverCalldata(order.signature)) {
+        if (user == address(0) || user != cancelOrderHash(order.order).recoverCalldata(order.signature)) {
             revert NativeTrader__WrongSignature();
         }
         delete orders[permitHash];
@@ -117,6 +124,9 @@ contract NativeTrader is IERC1271 {
     /// @notice Allows ETH as part of an order on Flood.
     /// @dev We require WETH to be the first token in the offer.
     function submitOrder(IFloodPlain.Order calldata order) external payable {
+        if (order.offerer != address(this)) {
+            revert NativeTrader__WrongOfferer();
+        }
         if (order.offer[0].token != address(weth)) {
             revert NativeTrader__WrongTokens();
         }
@@ -124,12 +134,24 @@ contract NativeTrader is IERC1271 {
             revert NativeTrader__WrongValue();
         }
 
-        orders[order.hashAsWitness(address(floodPlain))] = msg.sender;
+        orders[newOrderHash(order)] = msg.sender;
         weth.deposit{value: order.offer[0].amount}();
         uint256 length = order.offer.length;
         // Deposit the rest of the tokens.
         for (uint256 i = 1; i < length; ++i) {
             order.offer[i].token.safeTransferFrom(msg.sender, address(this), order.offer[i].amount);
         }
+    }
+
+    receive() external payable {}
+
+    function cancelOrderHash(IFloodPlain.Order calldata order) private view returns (bytes32) {
+        return keccak256(abi.encodePacked(abi.encodePacked("\x19\x01", domainSeparator, order.hash())));
+    }
+
+    function newOrderHash(IFloodPlain.Order calldata order) private view returns (bytes32) {
+        return keccak256(
+            abi.encodePacked("\x19\x01", domainSeparator, OrderHash.hashAsWitness(order, address(floodPlain)))
+        );
     }
 }
