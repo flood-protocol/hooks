@@ -2,6 +2,7 @@
 pragma solidity ^0.8.23;
 
 import {ERC20} from "solady/tokens/ERC20.sol";
+import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {IFloodPlain} from "flood-contracts/interfaces/IFloodPlain.sol";
 
 interface AcrossSpokePool {
@@ -25,10 +26,6 @@ contract AcrossHook {
         flood = _flood;
     }
 
-    function approve(ERC20 token) external {
-        token.approve(address(across), type(uint256).max);
-    }
-
     function deposit(
         IFloodPlain.Order calldata order,
         uint256 destinationChainId,
@@ -37,6 +34,7 @@ contract AcrossHook {
     ) external {
         uint256 considerationReceived = ERC20(order.consideration.token).balanceOf(address(this));
 
+        SafeTransferLib.safeApprove(order.consideration.token, address(across), considerationReceived);
         across.depositNow(
             order.recipient,
             order.consideration.token,
