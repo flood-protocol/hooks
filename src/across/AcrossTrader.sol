@@ -3,40 +3,46 @@ pragma solidity ^0.8.23;
 
 import {IFloodPlain} from "flood-contracts/interfaces/IFloodPlain.sol";
 import {OrderHash} from "flood-contracts/libraries/OrderHash.sol";
-import {WETH} from "solady/tokens/WETH.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
 import {ECDSA} from "solady/utils/ECDSA.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
-import {IERC1271} from "permit2/src/interfaces/IERC1271.sol";
 import {IEIP712} from "permit2/src/interfaces/IEIP712.sol";
+import {IERC1271} from "permit2/src/interfaces/IERC1271.sol";
 
-error NativeTrader__WrongOfferer();
-error NativeTrader__WrongValue();
-error NativeTrader__WrongTokens();
-error NativeTrader__WrongSignature();
-error NativeTrader__WrongReplacement();
+interface AcrossMessageHandler {
+    function handleAcrossMessage(
+        address tokenSent,
+        uint256 amount,
+        bool fillCompleted,
+        address relayer,
+        bytes memory message
+    ) external;
+}
 
-/// @title Native Trader
-/// @notice This contracts receives ETH and then trades it on Flood for a token of the sender's choice.
-contract NativeTrader is IERC1271 {
+error AcrossTrader__BadCaller();
+error AcrossTrader__WrongSignature();
+error AcrossTrader__WrongReplacement();
+
+/// @title Across Trader
+/// @notice This contracts receives tokens from an Across relay and then trades them on Flood for a token of the sender's choice.
+contract AcrossTrader is IERC1271, AcrossMessageHandler {
     using OrderHash for IFloodPlain.Order;
     using ECDSA for bytes32;
     using SafeTransferLib for address;
     using SafeTransferLib for address payable;
 
-    WETH immutable weth;
     IFloodPlain immutable floodPlain;
     bytes32 immutable domainSeparator;
+    address immutable acrossSpokePool;
 
     /// A mapping from permit hashes to the order signer.
     mapping(bytes32 permitHash => address user) public orders;
 
-    constructor(WETH _weth, IFloodPlain _floodPlain) {
-        weth = _weth;
+    constructor(IFloodPlain _floodPlain, address _acrossSpokePool) {
         floodPlain = _floodPlain;
         address permit2 = address(floodPlain.PERMIT2());
         domainSeparator = IEIP712(permit2).DOMAIN_SEPARATOR();
-        weth.approve(permit2, type(uint256).max);
+        acrossSpokePool = _acrossSpokePool;
     }
 
     /// @notice Max approves a token to Permit2.
@@ -71,27 +77,27 @@ contract NativeTrader is IERC1271 {
 
         // Check wether the user signed the order hash, indicating that they want to replace the order.
         if (user == address(0) || user != cancelOrderHash(oldOrder.order).recoverCalldata(oldOrder.signature)) {
-            revert NativeTrader__WrongSignature();
+            revert AcrossTrader__WrongSignature();
         }
 
         // Check wether the old user offer is the same as the new user offer.
         if (oldOrder.order.offer.length != newOrder.order.offer.length) {
-            revert NativeTrader__WrongReplacement();
+            revert AcrossTrader__WrongReplacement();
         }
         uint256 length = oldOrder.order.offer.length;
         for (uint256 i = 0; i < length; ++i) {
             if (oldOrder.order.offer[i].token != newOrder.order.offer[i].token) {
-                revert NativeTrader__WrongReplacement();
+                revert AcrossTrader__WrongReplacement();
             }
             if (oldOrder.order.offer[i].amount != newOrder.order.offer[i].amount) {
-                revert NativeTrader__WrongReplacement();
+                revert AcrossTrader__WrongReplacement();
             }
         }
 
         bytes32 newPermitHash = newOrderHash(newOrder.order);
         // Check wether the new user signed the permit hash, indicating that they want to replace the order.
         if (newPermitHash.recoverCalldata(newOrder.signature) != user) {
-            revert NativeTrader__WrongSignature();
+            revert AcrossTrader__WrongSignature();
         }
 
         // Delete the old order and add the new one.
@@ -108,42 +114,45 @@ contract NativeTrader is IERC1271 {
 
         // Check wether the user signed the order hash, indicating that they want to cancel the order.
         if (user == address(0) || user != cancelOrderHash(order.order).recoverCalldata(order.signature)) {
-            revert NativeTrader__WrongSignature();
+            revert AcrossTrader__WrongSignature();
         }
         delete orders[permitHash];
         // Transfer the tokens back to the user.
         uint256 length = order.order.offer.length;
-        // Unwrap the WETH and transfer it back to the user.
-        weth.withdraw(order.order.offer[0].amount);
-        payable(user).safeTransferETH(order.order.offer[0].amount);
-        for (uint256 i = 1; i < length; ++i) {
+
+        for (uint256 i = 0; i < length; ++i) {
             order.order.offer[i].token.safeTransfer(user, order.order.offer[i].amount);
         }
     }
 
-    /// @notice Allows ETH as part of an order on Flood.
-    /// @dev We require WETH to be the first token in the offer.
-    function submitOrder(IFloodPlain.Order calldata order) external payable {
-        if (order.offerer != address(this)) {
-            revert NativeTrader__WrongOfferer();
-        }
-        if (order.offer[0].token != address(weth)) {
-            revert NativeTrader__WrongTokens();
-        }
-        if (msg.value != order.offer[0].amount) {
-            revert NativeTrader__WrongValue();
+    /// @notice Receives tokens from an Across relay, then markes an order as valid, making it fillable for Flood fulfillers.
+    /// @dev We don't support Basket Liquidations in this example. To do so, one could probably save an additional counter in storage and increment it each time an Across relay with an offer token completes.
+    /// @dev The Signature of the Flood order should be passed offchain to the Flood Fulfiller, once the relay completes.
+    function handleAcrossMessage(
+        address, /*tokenSent*/
+        uint256, /*amount*/
+        bool fillCompleted,
+        address, /*relayer*/
+        bytes memory message
+    ) external {
+        if (msg.sender != acrossSpokePool) {
+            revert AcrossTrader__BadCaller();
         }
 
-        orders[newOrderHash(order)] = msg.sender;
-        weth.deposit{value: order.offer[0].amount}();
-        uint256 length = order.offer.length;
-        // Deposit the rest of the tokens.
-        for (uint256 i = 1; i < length; ++i) {
-            order.offer[i].token.safeTransferFrom(msg.sender, address(this), order.offer[i].amount);
+        if (!fillCompleted) {
+            return;
         }
+
+        // The user here is not strictly necessary as can be recovered from the signature. But since people mess signatures up all the time, we double check to prevent a loss of funds.
+        (bytes32 permitHash, bytes memory signature, address user) = abi.decode(message, (bytes32, bytes, address));
+
+        // Check wether the signer of the order is the user. We revert so user can update the Across message with the correct signature.
+        if (permitHash.recover(signature) != user) {
+            revert AcrossTrader__WrongSignature();
+        }
+
+        orders[permitHash] = user;
     }
-
-    receive() external payable {}
 
     function cancelOrderHash(IFloodPlain.Order calldata order) private view returns (bytes32) {
         return keccak256(abi.encodePacked(abi.encodePacked("\x19\x01", domainSeparator, order.hash())));
