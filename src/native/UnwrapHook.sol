@@ -13,14 +13,14 @@ contract UnwrapHook {
     using SafeTransferLib for address;
 
     address immutable floodPlain;
-    WETH immutable wrapped;
+    WETH immutable weth;
 
     constructor(WETH _weth, address _floodPlain) {
-        wrapped = _weth;
+        weth = _weth;
         floodPlain = _floodPlain;
     }
 
-    fallback() external {
+    fallback() external payable {
         if (msg.sender != floodPlain) {
             revert UnwrapHook__BadCaller();
         }
@@ -29,9 +29,9 @@ contract UnwrapHook {
             recipient := shr(96, calldataload(0))
         }
 
-        uint256 amount = wrapped.balanceOf(address(this));
+        uint256 amount = weth.balanceOf(address(this));
 
-        wrapped.withdraw(amount);
+        weth.withdraw(amount);
         recipient.safeTransferETH(amount);
     }
 

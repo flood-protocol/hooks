@@ -2,12 +2,13 @@
 pragma solidity ^0.8.23;
 
 import {IFloodPlain} from "flood-contracts/interfaces/IFloodPlain.sol";
-import {OrderHash} from "flood-contracts/libraries/OrderHash.sol";
+import {OrderHash as OrderHashCalldata} from "flood-contracts/libraries/OrderHash.sol";
 import {ERC20} from "solady/tokens/ERC20.sol";
 import {ECDSA} from "solady/utils/ECDSA.sol";
 import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 import {IEIP712} from "permit2/src/interfaces/IEIP712.sol";
 import {IERC1271} from "permit2/src/interfaces/IERC1271.sol";
+import {OrderHashMemory} from "../OrderHashMemory.sol";
 
 interface AcrossMessageHandler {
     function handleAcrossMessage(
@@ -26,7 +27,8 @@ error AcrossTrader__WrongReplacement();
 /// @title Across Trader
 /// @notice This contracts receives tokens from an Across relay and then trades them on Flood for a token of the sender's choice.
 contract AcrossTrader is IERC1271, AcrossMessageHandler {
-    using OrderHash for IFloodPlain.Order;
+    using OrderHashCalldata for IFloodPlain.Order;
+    using OrderHashMemory for IFloodPlain.Order;
     using ECDSA for bytes32;
     using SafeTransferLib for address;
     using SafeTransferLib for address payable;
@@ -129,8 +131,8 @@ contract AcrossTrader is IERC1271, AcrossMessageHandler {
     /// @dev We don't support Basket Liquidations in this example. To do so, one could probably save an additional counter in storage and increment it each time an Across relay with an offer token completes.
     /// @dev The Signature of the Flood order should be passed offchain to the Flood Fulfiller, once the relay completes.
     function handleAcrossMessage(
-        address, /*tokenSent*/
-        uint256, /*amount*/
+        address tokenSent,
+        uint256 amount,
         bool fillCompleted,
         address, /*relayer*/
         bytes memory message
@@ -144,23 +146,48 @@ contract AcrossTrader is IERC1271, AcrossMessageHandler {
         }
 
         // The user here is not strictly necessary as can be recovered from the signature. But since people mess signatures up all the time, we double check to prevent a loss of funds.
-        (bytes32 permitHash, bytes memory signature, address user) = abi.decode(message, (bytes32, bytes, address));
+        (
+            address zone,
+            address recipient,
+            IFloodPlain.Item memory consideration,
+            uint256 nonce,
+            uint256 deadline,
+            IFloodPlain.Hook[] memory preHooks,
+            IFloodPlain.Hook[] memory postHooks,
+            address user
+        ) = abi.decode(
+            message,
+            (address, address, IFloodPlain.Item, uint256, uint256, IFloodPlain.Hook[], IFloodPlain.Hook[], address)
+        );
 
-        // Check wether the signer of the order is the user. We revert so user can update the Across message with the correct signature.
-        if (permitHash.recover(signature) != user) {
-            revert AcrossTrader__WrongSignature();
-        }
+        // Reconstruct the offer
+        IFloodPlain.Item[] memory offer = new IFloodPlain.Item[](1);
+        offer[0] = IFloodPlain.Item({token: tokenSent, amount: amount});
+        IFloodPlain.Order memory order = IFloodPlain.Order({
+            offerer: address(this),
+            zone: zone,
+            recipient: recipient,
+            offer: offer,
+            consideration: consideration,
+            nonce: nonce,
+            deadline: deadline,
+            preHooks: preHooks,
+            postHooks: postHooks
+        });
+        bytes32 permitHash = keccak256(
+            abi.encodePacked("\x19\x01", domainSeparator, OrderHashMemory.hashAsWitness(order, address(floodPlain)))
+        );
 
         orders[permitHash] = user;
     }
 
     function cancelOrderHash(IFloodPlain.Order calldata order) private view returns (bytes32) {
-        return keccak256(abi.encodePacked(abi.encodePacked("\x19\x01", domainSeparator, order.hash())));
+        return keccak256(abi.encodePacked("\x19\x01", domainSeparator, OrderHashCalldata.hash(order)));
     }
 
     function newOrderHash(IFloodPlain.Order calldata order) private view returns (bytes32) {
         return keccak256(
-            abi.encodePacked("\x19\x01", domainSeparator, OrderHash.hashAsWitness(order, address(floodPlain)))
+            abi.encodePacked("\x19\x01", domainSeparator, OrderHashCalldata.hashAsWitness(order, address(floodPlain)))
         );
     }
 }

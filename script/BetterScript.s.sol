@@ -13,18 +13,6 @@ interface ICREATE3Factory {
 contract BetterScript is Script {
     ICREATE3Factory internal factory = ICREATE3Factory(0x2Dfcc7415D89af828cbef005F0d072D8b3F23183);
 
-    modifier broadcast(uint256 key) {
-        vm.startBroadcast(key);
-        _;
-        vm.stopBroadcast();
-    }
-
-    modifier broadcastAddr(address who) {
-        vm.startBroadcast(who);
-        _;
-        vm.stopBroadcast();
-    }
-
     function deploy3(bytes memory creationCode, bytes32 salt, bytes memory abiEncodedArgs) internal returns (address) {
         require(
             keccak256(abi.encodePacked(vm.envString("FOUNDRY_PROFILE"))) == keccak256(abi.encodePacked("deploy")),
