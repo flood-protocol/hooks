@@ -145,7 +145,6 @@ contract AcrossTrader is IERC1271, AcrossMessageHandler {
             return;
         }
 
-        // The user here is not strictly necessary as can be recovered from the signature. But since people mess signatures up all the time, we double check to prevent a loss of funds.
         (
             address zone,
             address recipient,
